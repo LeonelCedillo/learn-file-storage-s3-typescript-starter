@@ -44,15 +44,19 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   await Bun.write(tempFilePath, file);
 
   const aspectRatio = await getVideoAspectRatio(tempFilePath);
+  const processedFilePath = await processVideoForFastStart(tempFilePath);
 
-  let key = `${aspectRatio}/${videoId}.mp4`;
-  await uploadVideoToS3(cfg, key, tempFilePath, file.type); 
+  const key = `${aspectRatio}/${videoId}.mp4`;
+  await uploadVideoToS3(cfg, key, processedFilePath, file.type); 
 
   const videoURL = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${key}`;
   video.videoURL = videoURL;
   updateVideo(cfg.db, video);
 
-  await Promise.all([rm(tempFilePath, { force: true })]);
+  await Promise.all([
+    rm(tempFilePath, { force: true }),
+    rm(`${tempFilePath}.processed.mp4`, { force: true }),
+  ]);
   
   return respondWithJSON(200, video);
 }
@@ -98,4 +102,34 @@ export async function getVideoAspectRatio(filePath: string) {
     : height === Math.floor(16 * (width / 9))
       ? "portrait"
       : "other";
+}
+
+
+export async function processVideoForFastStart(inputFilePath: string) {
+  const outputFilePath = `${inputFilePath}.processed.mp4`;
+  const process = Bun.spawn(
+    [
+      "ffmpeg",
+      "-i",
+      inputFilePath,
+      "-movflags", 
+      "faststart", 
+      "-map_metadata", 
+      "0", 
+      "-codec", 
+      "copy", 
+      "-f", 
+      "mp4",
+      outputFilePath
+    ], 
+    { stderr: "pipe" }
+  )
+
+  const errorText = await new Response(process.stderr).text();
+  const exitCode = await process.exited;
+  if (exitCode !== 0) {
+    throw new Error(`FFmpeg error: ${errorText}`);
+  }
+
+  return outputFilePath;
 }
