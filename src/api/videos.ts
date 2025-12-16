@@ -1,12 +1,13 @@
 import path from "path";
 import { rm } from "fs/promises";
-import { uploadVideoToS3 } from "../s3";
-import { respondWithJSON } from "./json";
-import { getVideo, updateVideo } from "../db/videos";
-import { getBearerToken, validateJWT } from "../auth";
-import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
 import { type ApiConfig } from "../config";
 import { type BunRequest } from "bun";
+import { respondWithJSON } from "./json";
+import { getBearerToken, validateJWT } from "../auth";
+import { type Video, getVideo, updateVideo} from "../db/videos";
+import { uploadVideoToS3, generatePresignedURL } from "../s3";
+import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
+
 
 
 export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
@@ -49,16 +50,16 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   const key = `${aspectRatio}/${videoId}.mp4`;
   await uploadVideoToS3(cfg, key, processedFilePath, file.type); 
 
-  const videoURL = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${key}`;
-  video.videoURL = videoURL;
+  video.videoURL = key;
   updateVideo(cfg.db, video);
 
   await Promise.all([
     rm(tempFilePath, { force: true }),
     rm(processedFilePath, { force: true }),
   ]);
-  
-  return respondWithJSON(200, video);
+
+  const signedVideo = await dbVideoToSignedVideo(cfg, video);  
+  return respondWithJSON(200, signedVideo);
 }
 
 
@@ -132,4 +133,13 @@ export async function processVideoForFastStart(inputFilePath: string) {
   }
 
   return outputFilePath;
+}
+
+
+export async function dbVideoToSignedVideo(cfg: ApiConfig, video: Video) {
+  if (!video.videoURL) {
+    return video;
+  }
+  video.videoURL = await generatePresignedURL(cfg, video.videoURL, 5 * 60)
+  return video;
 }
